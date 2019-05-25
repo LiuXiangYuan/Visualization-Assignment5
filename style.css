@@ -1,0 +1,27 @@
+body, h1, h2, h3, p, a {
+	font-weight: 100;
+	font-family: Helvetica, 'Century Gothic', sans-serif;
+}
+
+body {
+	text-align: center;
+}
+
+svg g rect {
+	fill: transparent;
+	stroke: #bbb;
+}
+
+.centered {
+	margin: 0px auto;
+	width: 900px;
+}
+
+line {
+	stroke: #bbb;
+	stroke-width: 0.4px;
+}
+
+circle {
+	fill: rgb(216, 74, 74);
+}

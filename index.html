@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8">
+        <link rel="shortcut icon" href="#" />
+        <title>barnes-hut</title>
+        <link rel="stylesheet" href="style.css">
+        <script type="text/javascript" src="d3.js"></script>
+    </head>
+    <body class=centered>
+        <div id='main'></div>
+        <div id='viz'></div>
+        <div id=footer></div>
+        <script type="text/javascript">
+            var width = 800;        
+            var height = 800;
+            var dt = 10000;         //刷新秒
+            var G = 6.67384e-11;    //引力常数.
+            var e = 1;              
+            var theta = 0.5;        //用于决定是否应使用质心粒子
+
+            // 数据 // 粒子
+            var bodies = [];
+
+            var maximumMass = 3;
+            var maximumRadius = 300;
+            var minimumRadius = 40;
+
+            //将第一个粒子的质量设置为最重，并使其居中
+            bodies.push({});
+            bodies[0].m = maximumMass * 1000;
+            bodies[0].x = width / 2;
+            bodies[0].y = height / 2;
+            bodies[0].vx = 0;
+            bodies[0].vy = 0;
+            bodies[0].ax = 0;
+            bodies[0].ay = 0;
+            bodies[0].id = 'root';
+
+            var mNodeList = []; // 用于存储节点数据
+            var mEdgeList = []; // 用于存储边数据
+            var mNodeMap = {};  // Node-Edge Map
+
+            d3.json("miserables.json", function(error, graph){
+                if(error) throw error;
+                
+                // 存入数据节点
+                for(let i = 0; i < graph.nodes.length; i++){
+                    mNodeList.push(new Node(graph.nodes[i].id, i));
+                }
+                
+                // 存入边信息
+                for(let i = 0; i < graph.links.length; i++){
+                    let source = graph.links[i].source;
+                    let target = graph.links[i].target;
+                    mEdgeList.push(new Edge(source, target));
+                }
+
+                // 初始化
+                for (var i = 0; i < mNodeList.length; i++) {
+                    var body = {};
+
+                    // 用随机数初始化粒子的中心、角度
+                    var radius = minimumRadius + Math.random() * (maximumRadius - minimumRadius);
+                    var angle = Math.random() * Math.PI * 2;
+                    body.x = width / 2 + radius * Math.cos(angle);
+                    body.y = height / 2 + radius * Math.sin(angle);
+
+                    // 计算粒子和中心粒子之间的距离
+                    var dx = body.x - bodies[0].x;
+                    var dy = body.y - bodies[0].y;
+                    var r = Math.sqrt(dx*dx + dy*dy);
+
+                    // 计算速率 G * m / r
+                    var ve = Math.sqrt(G * bodies[0].m / r);
+
+                    // 设置粒子的速度 将速度分解成两个方向
+                    body.vx = ve * dy / r;
+                    body.vy = ve * -dx / r;
+
+                    // 随机数设置粒子的质量
+                    body.m = Math.random() * maximumMass;
+                    
+                    // 初始化初速度为0
+                    body.ax = 0;
+                    body.ay = 0;
+                    
+                    // 存入节点平面值
+                    let node = mNodeList[i];
+                    if(node)
+                        mNodeMap[node.id] = node;
+
+                    mNodeMap[node.id].x = body.x;
+                    mNodeMap[node.id].y = body.y;
+
+                    body.id = node.id;
+                    // 将粒子添加到数组中
+                    bodies.push(body);
+                }; 
+
+                // 更新边信息
+                for(let i = 0; i < mEdgeList.length; i++) {
+                    let startName = mEdgeList[i].source;
+                    let endName = mEdgeList[i].target;
+                    mEdgeList[i].x1 = mNodeMap[startName].x;
+                    mEdgeList[i].y1 = mNodeMap[startName].y;
+                    mEdgeList[i].x2 = mNodeMap[endName].x;
+                    mEdgeList[i].y2 = mNodeMap[endName].y;
+                }
+
+                d3.select("body").style({'width' : width + 'px'});
+
+                var mainSvg = d3.select("#viz")
+                    .append("svg")
+                    .attr("width", width)
+                    .attr("height", height);
+                
+                var rectGroup = mainSvg.append('g'); 
+
+                // 绘制边
+                mainSvg.selectAll('line')
+                        .data(mEdgeList)
+                        .enter().append('line')
+                        .attr('x1', function(d) { return d.x1 })
+                        .attr('y1', function(d) { return d.y1 })
+                        .attr('x2', function(d) { return d.x2 })
+                        .attr('y2', function(d) { return d.y2 });
+                        
+                // 绘制粒子节点
+                mainSvg.selectAll('circle')
+                        .data(bodies)
+                        .enter()
+                        .append('circle')
+                        .attr('cx', function(d) { return d.x })
+                        .attr('cy', function(d) { return d.y })
+                        .attr('r', 3);
+
+                
+                // 循环更新
+                (function update() {
+                    function cmp(arr, prop, fn) {
+                        var res = prop(arr[0]);
+                        for (var i = 0; i < arr.length; i++) {
+                            res = fn(res, prop(arr[i]));
+                        };
+
+                        return res;
+                    }
+
+                     // 构建qtree
+                    var qroot = {};
+                    // 边界
+                    var bounds = {
+                        minX : cmp(bodies, function(d) { return d.x; }, Math.min),
+                        maxX : cmp(bodies, function(d) { return d.x; }, Math.max),
+                        minY : cmp(bodies, function(d) { return d.y; }, Math.min),
+                        maxY : cmp(bodies, function(d) { return d.y; }, Math.max),
+                    };
+                    constructQTree(qroot, bodies, bounds);
+
+                    // 使用Barnes-Hut方法计算每个物体的加速度
+                    function calculateAcceleration(body, node) {
+                        if (node === undefined)
+                            return;
+                        else if (node.body == body)
+                            return;
+
+                        // 计算节点和中心粒子的距离和边界宽度
+                        var dx = node.body.x - body.x;
+                        var dy = node.body.y - body.y;
+                        var r = Math.sqrt(dx*dx + dy*dy);
+                        var boundWidth = node.bounds.maxX - node.bounds.minX;
+
+                        if (boundWidth/r <= theta ||
+                            (node.q1 === undefined && node.q2 === undefined &&
+                            node.q3 === undefined && node.q4 === undefined)) {
+                            var dx = body.x - node.body.x;
+                            var dy = body.y - node.body.y;
+                            var r = Math.max(Math.sqrt(dx*dx + dy*dy), e);
+                            var f = G * node.body.m / (r*r);
+
+                            // 粒子互相吸引
+                            body.ax -= f * (dx/r);
+                            body.ay -= f * (dy/r);
+                        } else {
+                            // 四个方向检查是否有主体，有则递归计算下面节点的加速度
+                            if (node.q1 !== undefined)
+                                calculateAcceleration(body, node.q1);
+
+                            if (node.q2 !== undefined)
+                                calculateAcceleration(body, node.q2);
+
+                            if (node.q3 !== undefined)
+                                calculateAcceleration(body, node.q3);
+
+                            if (node.q4 !== undefined)
+                                calculateAcceleration(body, node.q4);
+                        }
+                    }
+
+                    // 使用递归方法计算加速度
+                    for (var i = 1; i < bodies.length; i++) {
+                        bodies[i].ax = 0;
+                        bodies[i].ay = 0;
+                        calculateAcceleration(bodies[i], qroot);
+                    }
+
+                    // 更新速率和位置
+                    for (var i = 1; i < bodies.length; i++) {
+                        bodies[i].vx += bodies[i].ax * dt;
+                        bodies[i].vy += bodies[i].ay * dt;
+                        bodies[i].x += bodies[i].vx * dt;
+                        bodies[i].y += bodies[i].vy * dt;
+                        mNodeMap[bodies[i].id].x = bodies[i].x;
+                        mNodeMap[bodies[i].id].y = bodies[i].y;
+                    }
+
+                    // 更新边信息
+                    for(let i = 0; i < mEdgeList.length; i++) {
+                        let startName = mEdgeList[i].source;
+                        let endName = mEdgeList[i].target;
+                        mEdgeList[i].x1 = mNodeMap[startName].x;
+                        mEdgeList[i].y1 = mNodeMap[startName].y;
+                        mEdgeList[i].x2 = mNodeMap[endName].x;
+                        mEdgeList[i].y2 = mNodeMap[endName].y;
+                    }
+
+                    // 更新图
+                    mainSvg.selectAll('line')
+                        .data(mEdgeList)
+                        .attr('x1', function(d) { return d.x1 })
+                        .attr('x2', function(d) { return d.x2 })
+                        .attr('y1', function(d) { return d.y1 })
+                        .attr('y2', function(d) { return d.y2 });
+
+                    mainSvg.selectAll('circle')
+                        .data(bodies)
+                        .attr('cx', function(d) { return d.x })
+                        .attr('cy', function(d) { return d.y });
+                    
+                    // 绘制四叉树
+                    drawQuads(qroot);
+
+                    //Recall update with a delay.
+                    setTimeout(update, 0);
+                })();
+
+                // 给定根对象，初始边界框和实体，构造四叉树
+                function constructQTree(node, particles, bounds) {
+                    node.bounds = bounds;
+                    if (particles.length == 1) {
+                        node.body = particles[0];
+                        return;
+                    } else {
+                        var centerOfMassX = 0;
+                        var centerOfMassY = 0;
+                        var totalMass = 0;
+
+                        // 计算平均质心
+                        for (var i = 0; i < particles.length; i++) {
+                            centerOfMassX += particles[i].x * particles[i].m;
+                            centerOfMassY += particles[i].y * particles[i].m;
+                            totalMass += particles[i].m
+                        };
+
+                        centerOfMassX /= totalMass;
+                        centerOfMassY /= totalMass;
+
+                        node.body = {
+                            x : centerOfMassX,
+                            y : centerOfMassY,
+                            m : totalMass
+                        }
+                    }
+
+                    var q1List = [];
+                    var q2List = [];
+                    var q3List = [];
+                    var q4List = [];
+
+                    var centerX = (bounds.minX + bounds.maxX) / 2;
+                    var centerY = (bounds.minY + bounds.maxY) / 2;
+
+                    // 判断节点的位置，划分不同方向
+                    for (var i = 0; i < particles.length; i++) {
+                        if (particles[i].x < centerX && particles[i].y < centerY)
+                            q1List.push(particles[i]);
+                        else if (particles[i].x >= centerX && particles[i].y < centerY)
+                            q2List.push(particles[i]);
+                        else if (particles[i].x >= centerX && particles[i].y >= centerY)
+                            q3List.push(particles[i]);
+                        else if (particles[i].x < centerX && particles[i].y >= centerY)
+                            q4List.push(particles[i]);
+                    };
+
+                    // 如果列表不为空，则构建新的四叉树主体
+                    if (q1List.length > 0) {
+                        node.q1 = {};
+                        constructQTree(node.q1, q1List, {
+                            minX : bounds.minX,
+                            maxX : centerX,
+                            minY : bounds.minY,
+                            maxY : centerY
+                        });
+                    }
+
+                    if (q2List.length > 0) {
+                        node.q2 = {};
+                        constructQTree(node.q2, q2List, {
+                            minX : centerX,
+                            maxX : bounds.maxX,
+                            minY : bounds.minY,
+                            maxY : centerY
+                        });
+                    }
+
+                    if (q3List.length > 0) {
+                        node.q3 = {};
+                        constructQTree(node.q3, q3List, {
+                            minX : centerX,
+                            maxX : bounds.maxX,
+                            minY : centerY,
+                            maxY : bounds.maxY
+                        });
+                    }
+
+                    if (q4List.length > 0) {
+                        node.q4 = {};
+                        constructQTree(node.q4, q4List, {
+                            minX : bounds.minX,
+                            maxX : centerX,
+                            minY : centerY,
+                            maxY : bounds.maxY
+                        });
+                    }
+                }
+
+                // 递归绘制所有节点的矩形
+                function drawQuads(qroot) {
+                    var quads = [];
+                    (function traverse(node) {
+                        if (node !== undefined) {
+                            quads.push(node.bounds);
+                            traverse(node.q1);
+                            traverse(node.q2);
+                            traverse(node.q3);
+                            traverse(node.q4);
+                        }
+                    })(qroot);
+
+                    var rects = rectGroup.selectAll('rect').data(quads);
+                    rects.enter().append('rect');
+                    rects
+                        .attr('x', function(d) { return d.minX; })
+                        .attr('y', function(d) { return d.minY; })
+                        .attr('width', function(d) { return d.maxX - d.minX; })
+                        .attr('height', function(d) { return d.maxY - d.minY; });
+                    rects.exit().remove();
+                }
+
+            });
+
+            // Node 定义
+            function Node(id = null, i = null){
+                    this.id = id;
+                    this.x = 22;
+                    this.y = null; 
+                    this.i = i;
+                }
+                
+            // Edge 定义
+            function Edge(source = null, target = null){
+                this.source = source;
+                this.target = target;
+                this.x1 = null;
+                this.y1 = null;
+                this.x2 = null;
+                this.y2 = null;
+            }
+
+        </script>
+    </body>
+</html>
